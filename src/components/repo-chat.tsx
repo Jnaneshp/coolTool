@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loader2, Send, Bot, User, FileCode, FileText } from "lucide-react";
@@ -20,21 +20,40 @@ interface RepoChatProps {
   repoDescription?: string;
   repoReadme?: string;
   fileStructure?: any[];
+  selectedFile?: string | null;
 }
 
-export function RepoChat({ repoName, repoOwner, repoDescription, repoReadme, fileStructure }: RepoChatProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      content: `Hi there! I'm your repository assistant for **${repoName}**. Ask me anything about this repository, and I'll try to help.\n\nYou can ask me to show code from specific files by saying:\n- "Show me the code in [filename]"\n- "What's in [filename]"\n- "Display [filename]"`,
-      timestamp: new Date()
-    }
-  ]);
+export function RepoChat({ repoName, repoOwner, repoDescription, repoReadme, fileStructure, selectedFile }: RepoChatProps) {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [fileList, setFileList] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+
+  // Initialize messages once or when selectedFile changes
+  useEffect(() => {
+    const initialMessage = {
+      role: 'assistant' as const,
+      content: selectedFile 
+        ? `Hi there! I'm your repository assistant for **${repoName}**. You've selected the file **${selectedFile}**. What would you like to know about this file?`
+        : `Hi there! I'm your repository assistant for **${repoName}**. Ask me anything about this repository, and I'll try to help.\n\nYou can ask me to show code from specific files by saying:\n- "Show me the code in [filename]"\n- "What's in [filename]"\n- "Display [filename]"`,
+      timestamp: new Date()
+    };
+
+    // Only reset messages if there are none yet or if selectedFile changes
+    setMessages(prev => {
+      if (prev.length === 0 || (selectedFile && prev[0].content.indexOf(selectedFile) === -1)) {
+        return [initialMessage];
+      }
+      return prev;
+    });
+    
+    // If there's a selected file, prepare a query to show it
+    if (selectedFile && messages.length === 0) {
+      setInput(`Show me the code in ${selectedFile}`);
+    }
+  }, [repoName, selectedFile, messages.length]);
 
   // Extract file names from fileStructure on component mount
   useEffect(() => {
@@ -51,7 +70,7 @@ export function RepoChat({ repoName, repoOwner, repoDescription, repoReadme, fil
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!input.trim() || isLoading) return;
@@ -71,9 +90,48 @@ export function RepoChat({ repoName, repoOwner, repoDescription, repoReadme, fil
       // Get context from readme
       const context = repoReadme ? repoReadme : null;
       
+      // Check if this is a file access request
+      const fileAccessRegex = /(show|display|what'?s in|content of) ['"]?(.+?\.[\w]+)['"]?/i;
+      const fileAccessMatch = input.match(fileAccessRegex);
+      
+      // Check for specific patterns that might indicate requesting a file with square brackets
+      const containsAuthRoutePatterns = input.toLowerCase().includes('sign-in') || 
+        input.toLowerCase().includes('auth') || 
+        input.toLowerCase().includes('[[...') || 
+        input.toLowerCase().includes('route') || 
+        input.includes('(auth)');
+        
+      // Handle special case for files that might be inaccessible
+      if (fileAccessMatch && containsAuthRoutePatterns) {
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: `I'm sorry, I don't have access to the content of the file you requested. Files in Next.js route directories with special naming patterns like \`(auth)\` or files with square brackets (\`[[...]]\`) might not be accessible through the GitHub API due to:
+
+1. GitHub API limitations with special characters in paths
+2. Authentication requirements for accessing certain repository content
+3. The file might be part of a private directory or require special permissions
+
+If you'd like to see this file, you would need to clone the repository locally and open it in your own development environment.
+
+Is there something else about the repository you'd like to know about?`,
+          timestamp: new Date()
+        };
+        
+        setMessages(prev => [...prev, assistantMessage]);
+        setIsLoading(false);
+        return;
+      }
+      
+      // Build a query that focuses on the selected file if applicable
+      let query = input;
+      if (selectedFile && !input.toLowerCase().includes(selectedFile.toLowerCase())) {
+        // If the user's message doesn't reference the file, make sure the query does
+        query = `Regarding the file ${selectedFile}: ${input}`;
+      }
+      
       // Get response from Gemini
       const response = await queryRepoWithGemini(
-        input,
+        query,
         repoName,
         repoOwner,
         repoDescription || null,
@@ -81,14 +139,38 @@ export function RepoChat({ repoName, repoOwner, repoDescription, repoReadme, fil
         fileStructure
       );
       
-      // Add assistant message
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: response,
-        timestamp: new Date()
-      };
-      
-      setMessages(prev => [...prev, assistantMessage]);
+      // Add custom handling for failed file requests
+      if (response.includes("I tried to fetch the content of") && response.includes("but couldn't access it")) {
+        // Extract the file path from the error message
+        const filePathMatch = response.match(/content of (.+?),/);
+        const filePath = filePathMatch ? filePathMatch[1] : "the file";
+        
+        const enhancedResponse = `I'm sorry, I couldn't access the content of \`${filePath}\`. This might be due to:
+
+1. GitHub API limitations - files with special characters or in certain directories may not be accessible
+2. Authentication requirements - some repositories restrict access to certain files
+3. The file might not exist or might be in a different location
+
+Is there something else you'd like to know about the repository?`;
+
+        // Add assistant message with enhanced response
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: enhancedResponse,
+          timestamp: new Date()
+        };
+        
+        setMessages(prev => [...prev, assistantMessage]);
+      } else {
+        // Add regular assistant message
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: response,
+          timestamp: new Date()
+        };
+        
+        setMessages(prev => [...prev, assistantMessage]);
+      }
     } catch (error) {
       console.error("Error getting response:", error);
       
@@ -100,15 +182,37 @@ export function RepoChat({ repoName, repoOwner, repoDescription, repoReadme, fil
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [input, isLoading, selectedFile, repoName, repoOwner, repoDescription, repoReadme, fileStructure, toast]);
+
+  // Auto-submit query for selected file when it's first set (placed after handleSubmit)
+  useEffect(() => {
+    // Only auto-submit if there's a selected file and only one message
+    if (selectedFile && messages.length === 1 && !isLoading) {
+      const query = `Show me the code in ${selectedFile}`;
+      setInput(query);
+      
+      // Use setTimeout to allow the UI to update with the input before submitting
+      setTimeout(() => {
+        const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
+        handleSubmit(fakeEvent);
+      }, 100);
+    }
+  }, [selectedFile, messages.length, isLoading, handleSubmit]);
 
   // Suggestion buttons for common queries
-  const suggestions = [
-    "What files are in this repository?",
-    "Explain the project structure",
-    "What dependencies does this project use?",
-    "Show me the main file"
-  ];
+  const suggestions = selectedFile 
+    ? [
+        `Explain how ${selectedFile} works`,
+        `What are the main functions in ${selectedFile}?`,
+        `Show me the code in ${selectedFile}`,
+        `What does this file do?`
+      ]
+    : [
+        "What files are in this repository?",
+        "Explain the project structure",
+        "What dependencies does this project use?",
+        "Show me the main file"
+      ];
 
   // Add file-specific suggestions if we have files
   if (fileList.length > 0) {

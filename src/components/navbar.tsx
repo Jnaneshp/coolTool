@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { UserButton } from "@clerk/nextjs";
 import { Menu, X, Moon, Sun, Home, BarChart3, Settings, Github } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -10,6 +10,12 @@ import { Button } from "@/components/ui/button";
 export function Navbar() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { setTheme, theme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  // Only show theme toggling after component has mounted to avoid hydration mismatch
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const toggleMenu = () => {
     setIsMenuOpen(!isMenuOpen);
@@ -59,10 +65,14 @@ export function Navbar() {
                 onClick={toggleTheme} 
                 className="rounded-full"
               >
-                {theme === "dark" ? (
-                  <Sun className="h-5 w-5" />
+                {mounted ? (
+                  theme === "dark" ? (
+                    <Sun className="h-5 w-5" />
+                  ) : (
+                    <Moon className="h-5 w-5" />
+                  )
                 ) : (
-                  <Moon className="h-5 w-5" />
+                  <div className="h-5 w-5" /> /* Placeholder to avoid hydration mismatch */
                 )}
                 <span className="sr-only">Toggle theme</span>
               </Button>
@@ -110,10 +120,14 @@ export function Navbar() {
                 onClick={toggleTheme} 
                 className="rounded-full"
               >
-                {theme === "dark" ? (
-                  <Sun className="h-5 w-5" />
+                {mounted ? (
+                  theme === "dark" ? (
+                    <Sun className="h-5 w-5" />
+                  ) : (
+                    <Moon className="h-5 w-5" />
+                  )
                 ) : (
-                  <Moon className="h-5 w-5" />
+                  <div className="h-5 w-5" /> /* Placeholder to avoid hydration mismatch */
                 )}
                 <span className="sr-only">Toggle theme</span>
               </Button>

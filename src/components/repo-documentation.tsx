@@ -3,10 +3,11 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, FileText, Code, BookOpen, ArrowLeft, Sparkles } from "lucide-react";
+import { Loader2, FileText, Code, BookOpen, ArrowLeft, Sparkles, MessageSquare } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import ReactMarkdown from 'react-markdown';
 import { generateRepoDocumentation } from "@/lib/gemini";
+import { RepoChat } from "@/components/repo-chat";
 
 interface RepoDocumentationProps {
   repoName: string;
@@ -22,7 +23,7 @@ export function RepoDocumentation({ repoName, repoOwner, repoDescription, onBack
   const [geminiDocs, setGeminiDocs] = useState<string | null>(null);
   const [generatingAIDocs, setGeneratingAIDocs] = useState(false);
   const [fileStructure, setFileStructure] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'readme' | 'docs' | 'ai-docs' | 'structure'>('readme');
+  const [activeTab, setActiveTab] = useState<'readme' | 'docs' | 'ai-docs' | 'structure' | 'chat'>('readme');
   const { toast } = useToast();
 
   // Safe base64 decode function that works in browser environment
@@ -74,16 +75,7 @@ export function RepoDocumentation({ repoName, repoOwner, repoDescription, onBack
         }
 
         // Fetch repository contents to analyze structure
-        const contentsResponse = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents`);
-        if (contentsResponse.ok) {
-          const contentsData = await contentsResponse.json();
-          setFileStructure(contentsData);
-          
-          // Generate simple documentation based on file structure
-          generateBasicDocumentation(contentsData);
-        } else {
-          console.error("Failed to fetch repository contents");
-        }
+        await fetchRepositoryStructure(repoOwner, repoName);
       } catch (error) {
         console.error("Error fetching repository data:", error);
         toast({
@@ -98,6 +90,84 @@ export function RepoDocumentation({ repoName, repoOwner, repoDescription, onBack
 
     fetchRepositoryData();
   }, [repoName, repoOwner, toast]);
+
+  // New function to recursively fetch repository structure
+  const fetchRepositoryStructure = async (owner: string, repo: string, path: string = '') => {
+    try {
+      const contentsUrl = path 
+        ? `https://api.github.com/repos/${owner}/${repo}/contents/${path}`
+        : `https://api.github.com/repos/${owner}/${repo}/contents`;
+      
+      const contentsResponse = await fetch(contentsUrl);
+      
+      if (!contentsResponse.ok) {
+        console.error(`Failed to fetch repository contents for path ${path}`);
+        return;
+      }
+      
+      const contentsData = await contentsResponse.json();
+      
+      // For the root level, directly set the file structure
+      if (!path) {
+        setFileStructure(contentsData);
+        generateBasicDocumentation(contentsData);
+        
+        // Process some key directories like src, app, or pages (common in web projects)
+        const importantDirs = contentsData.filter((item: any) => 
+          item.type === 'dir' && 
+          ['src', 'app', 'pages', 'components'].includes(item.name)
+        );
+        
+        // Recursively fetch important directories (limited to avoid API rate limits)
+        for (const dir of importantDirs.slice(0, 2)) {
+          await fetchDirectoryContents(owner, repo, dir.path);
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching repository structure:", error);
+    }
+  };
+
+  // Helper function to fetch directory contents and update files
+  const fetchDirectoryContents = async (owner: string, repo: string, path: string) => {
+    try {
+      const dirUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+      const response = await fetch(dirUrl);
+      
+      if (!response.ok) {
+        return;
+      }
+      
+      const dirContents = await response.json();
+      
+      // Update file structure with these new contents
+      setFileStructure(prevFiles => {
+        // Create a deep copy to avoid mutation
+        const newFiles = [...prevFiles];
+        
+        // Find the directory in the existing structure
+        const dirIndex = newFiles.findIndex(file => file.path === path);
+        
+        if (dirIndex !== -1) {
+          // Replace the directory with its contents
+          newFiles.splice(dirIndex, 1, ...dirContents);
+        } else {
+          // Just append the contents
+          newFiles.push(...dirContents);
+        }
+        
+        return newFiles;
+      });
+      
+      // Recursively fetch subdirectories (limited depth to avoid API rate limits)
+      const subdirs = dirContents.filter((item: any) => item.type === 'dir');
+      for (const subdir of subdirs.slice(0, 2)) {
+        await fetchDirectoryContents(owner, repo, subdir.path);
+      }
+    } catch (error) {
+      console.error(`Error fetching directory contents for ${path}:`, error);
+    }
+  };
 
   // Generate AI documentation using Gemini
   const handleGenerateAIDocs = async () => {
@@ -293,54 +363,69 @@ This documentation was automatically generated based on the repository structure
           >
             <Code className="h-4 w-4 mr-2" /> Structure
           </Button>
+          <Button
+            variant={activeTab === 'chat' ? "default" : "ghost"}
+            className="rounded-b-none border-b-2 border-transparent"
+            onClick={() => setActiveTab('chat')}
+          >
+            <MessageSquare className="h-4 w-4 mr-2" /> Chat
+          </Button>
         </div>
 
-        <div className="prose dark:prose-invert prose-sm max-w-none">
-          {activeTab === 'readme' && readme && (
-            <div className="markdown-content">
-              <ReactMarkdown>{readme}</ReactMarkdown>
-            </div>
-          )}
+        {activeTab === 'readme' && readme && (
+          <div className="prose dark:prose-invert prose-sm max-w-none markdown-content">
+            <ReactMarkdown>{readme}</ReactMarkdown>
+          </div>
+        )}
 
-          {activeTab === 'ai-docs' && geminiDocs && (
-            <div className="markdown-content">
-              <ReactMarkdown>{geminiDocs}</ReactMarkdown>
-            </div>
-          )}
+        {activeTab === 'ai-docs' && geminiDocs && (
+          <div className="prose dark:prose-invert prose-sm max-w-none markdown-content">
+            <ReactMarkdown>{geminiDocs}</ReactMarkdown>
+          </div>
+        )}
 
-          {activeTab === 'docs' && documentation && (
-            <div className="markdown-content">
-              <ReactMarkdown>{documentation}</ReactMarkdown>
-            </div>
-          )}
+        {activeTab === 'docs' && documentation && (
+          <div className="prose dark:prose-invert prose-sm max-w-none markdown-content">
+            <ReactMarkdown>{documentation}</ReactMarkdown>
+          </div>
+        )}
 
-          {activeTab === 'structure' && (
-            <div>
-              <h3>Repository Structure</h3>
-              <ul className="space-y-2 mt-4">
-                {fileStructure.map((file) => (
-                  <li key={file.path} className="flex items-center">
-                    {file.type === 'dir' ? (
-                      <span className="flex items-center">
-                        <svg className="h-5 w-5 text-yellow-500 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-                        </svg>
-                        <span className="font-medium">{file.name}/</span>
-                      </span>
-                    ) : (
-                      <span className="flex items-center">
-                        <svg className="h-5 w-5 text-gray-400 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-                        </svg>
-                        {file.name}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
+        {activeTab === 'structure' && (
+          <div className="prose dark:prose-invert prose-sm max-w-none">
+            <h3>Repository Structure</h3>
+            <ul className="space-y-2 mt-4">
+              {fileStructure.map((file) => (
+                <li key={file.path} className="flex items-center">
+                  {file.type === 'dir' ? (
+                    <span className="flex items-center">
+                      <svg className="h-5 w-5 text-yellow-500 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                      </svg>
+                      <span className="font-medium">{file.name}/</span>
+                    </span>
+                  ) : (
+                    <span className="flex items-center">
+                      <svg className="h-5 w-5 text-gray-400 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                      </svg>
+                      {file.name}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {activeTab === 'chat' && (
+          <RepoChat 
+            repoName={repoName}
+            repoOwner={repoOwner}
+            repoDescription={repoDescription}
+            repoReadme={readme || undefined}
+            fileStructure={fileStructure}
+          />
+        )}
       </CardContent>
     </Card>
   );
